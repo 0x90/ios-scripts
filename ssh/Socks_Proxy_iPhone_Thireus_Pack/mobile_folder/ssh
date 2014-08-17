@@ -1,0 +1,110 @@
+#!/bin/bash
+
+# Copyright © 2010 Thireus. All Rights Reserved.
+# Pour tout commentaire thireus[AT]gmail[DOT]com
+# http://thireus.dareyourmind.net/
+
+# Petit script pour se connecter en ssh, avec reconnexion automatique ;)
+
+USE_ONLY_FOR_WIFI='YES' # Utilisation du proxy seulement en mode wifi? Default = YES
+USE_BLACK_HOLE_PROXY='YES' # Utilisation d'un proxy "black hole" local? Default = YES
+USE_BLACK_HOLE_PROXY_SCRIPT='./black_hole_http_server.pl' # Adresse du script pour le black hole
+USE_BLACK_HOLE_PROXY_PORT='1234' # Port du proxy hole pour netcat
+DELAY=5 # Timeout in seconds to get a reply from the server
+
+LIMIT_DELAY_WIFI_ALIVE=60 # Limite approximative d'attente pour détecter si le wifi est actif
+LIMIT_DELAY_ONE_ALIVE=10 # Limite approximative d'attente pour détecter si le wifi, la 3G ou Edge est actif
+LIMIT_ADD_DELAY=360 # Limite approximative d'attente pour refaire un tour de boucle pour retenter un ssh, dans le cas où le serveur est down...
+LIMIT_DELAY=10 # Limite approximative d'attente du timeout pour le ping...
+
+DNS_TO_PING='www.yourserver.com' # Better to use the server dns where is located the proxy or proxy.pac file
+DNS_TO_IP='000.000.000.000' # Better to use the server dns where is located the proxy or proxy.pac file
+DNS_TO_PORT='22' # Better to use the server dns where is located the proxy or proxy.pac file
+
+SSH_SERVER='login@000.000.000.000' # user@ssh_server it's where you want to connect
+
+CONNECT_ME="ssh -D 4321 -N -C -c aes128-cbc $SSH_SERVER -o CompressionLevel=6 -o ServerAliveInterval=5 -o ConnectTimeout=5"
+
+#DNS_FAIL="Error: Couldn't resolve host"
+#DNS_SUCCESS="$DNS_TO_IP"
+#PING_REFUSED='Connection refused'
+#PING_TIMEOUT='Operation timed out'
+#PING_SUCCESS='open'
+ADD_DELAY=0 # Delay d'ajout à 0 par défaut
+ADD_DELAY_WIFI_ALIVE=0  # Delay d'ajout à 0 par défaut
+ADD_DELAY_ONE_ALIVE=0  # Delay d'ajout à 0 par défaut
+DELAY_Default=$DELAY # Timeout in seconds to get a reply from the server
+
+echo 'Starting ssh script...'
+#${CONNECT_ME}
+
+while [ 1 ]
+do
+	
+	IS_WIFI_ALIVE='' # Réponse par défaut du ifconfig
+	IS_ONE_ALIVE='' # Réponse par défaut du ifconfig
+	
+	if [ "$USE_BLACK_HOLE_PROXY" == "YES" ]; then
+		echo 'Is the black hole already launched?'
+		nc -zv -w 1 127.0.0.1 $USE_BLACK_HOLE_PROXY_PORT # We make the ping
+		if [ $? -ne 1 ]; then
+			echo 'Black Hole is already launched!'
+		else
+			echo 'Black Hole starting...'
+			${USE_BLACK_HOLE_PROXY_SCRIPT} & # Launched in background!!!
+			if [ $? -eq 1 ]; then
+				echo "WARNING!!!!!!! BLACK HOLE CAN'T BE LAUNCHED!!!!! DIRECT CONNEXION WILL BE USED INSTEAD!!!!"
+			else
+				echo 'Black Hole should be ready now...'
+			fi
+		fi		
+	fi
+	
+	if [ "$USE_ONLY_FOR_WIFI" == "YES" ]; then
+		echo "Waiting for Wifi to be alive..." # On attend qu'on soit connecté au Wifi ;)
+		while [ "$IS_WIFI_ALIVE" == "" ]; do
+			sleep $ADD_DELAY_WIFI_ALIVE
+			if [ $ADD_DELAY_WIFI_ALIVE -lt $LIMIT_DELAY_WIFI_ALIVE ]; then
+				ADD_DELAY_WIFI_ALIVE=$((1+$ADD_DELAY_WIFI_ALIVE))
+			fi
+			IS_WIFI_ALIVE=`ifconfig en0 | grep inet`
+		done
+		echo "$IS_WIFI_ALIVE" # On affiche qu'on est bel et bien connecté en Wifi ;)
+	else
+		echo "Waiting for Wifi/3G/Edge to be alive..." # On attend qu'on soit connecté en Wifi, 3G ou Edge ;)
+		while [ "$IS_ONE_ALIVE" == "" ]; do
+			sleep $ADD_DELAY_ONE_ALIVE
+			if [ $ADD_DELAY_ONE_ALIVE -lt $LIMIT_DELAY_ONE_ALIVE ]; then
+				ADD_DELAY_ONE_ALIVE=$((1+$ADD_DELAY_ONE_ALIVE))
+			fi
+			IS_ONE_ALIVE=`ifconfig en0 | grep inet; ifconfig pdp_ip0 | grep inet`
+		done
+		echo "$IS_ONE_ALIVE" # On affiche qu'on est bel et bien connecté en Wifi/3G/Edge ;)
+	fi
+	
+	sleep $ADD_DELAY
+	
+	nc -zv -w $DELAY $DNS_TO_PING $DNS_TO_PORT # We make the ping
+	
+	if [ $? -ne 1 ]; then
+	
+		echo 'Everything is fine... connexion is ok!'
+		${CONNECT_ME}
+		ADD_DELAY=0 # Reset de l'ajout du delay pour le sleep
+		ADD_DELAY_WIFI_ALIVE=0  # Reset d'ajout pour la détection wifi
+		ADD_DELAY_ONE_ALIVE=0  # Reset d'ajout pour la détection wifi
+		DELAY=$DELAY_Default # Reset du delay du ping
+		
+	else
+		
+		if [ $ADD_DELAY -lt $LIMIT_ADD_DELAY ]; then
+			ADD_DELAY=$((5+$ADD_DELAY)) # On ajoute 5sec pour le delay du sleep
+		fi
+		echo "Connexion lost... Will retry in $ADD_DELAY seconds"
+		if [ $DELAY -lt $LIMIT_DELAY ]; then
+			DELAY=$((3+$DELAY)) # On ajoute 3sec pour le delay du ping, car il semblerait que notre connexion soit lente
+		fi
+	fi
+done
+
+echo 'Killed...'
